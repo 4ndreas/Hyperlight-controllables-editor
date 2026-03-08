@@ -1,6 +1,7 @@
 param(
     [string]$Host = "127.0.0.1",
-    [int]$Port = 8765
+    [int]$Port = 8765,
+    [switch]$Rebuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,11 +17,10 @@ if (-not (Test-Path $PythonExe)) {
 
 Push-Location $FrontendRoot
 try {
-    if (-not (Test-Path "node_modules")) {
-        npm install
-    }
-
-    if (-not (Test-Path "dist")) {
+    if ($Rebuild -or -not (Test-Path "dist")) {
+        if (-not (Test-Path "node_modules")) {
+            npm install
+        }
         npm run build
     }
 }

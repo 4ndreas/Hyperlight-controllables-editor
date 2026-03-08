@@ -14,6 +14,12 @@ From the `lightcontrol` repository root:
 
 Default URL: `http://127.0.0.1:8765`
 
+Rebuild the frontend bundle only when needed:
+
+```powershell
+.\controllables-editor\start_editor.ps1 -Rebuild
+```
+
 ## Manual Run
 
 Build the frontend once:
