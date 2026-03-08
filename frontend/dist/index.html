@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Controllables Editor</title>
+    <script type="module" crossorigin src="./assets/index-JjqBTJhV.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CETWH872.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="panel">
+        <div class="brand">
+          <p class="eyebrow">lightcontrol</p>
+          <h1>Controllables Editor</h1>
+          <p class="panel-copy">Move and rotate active fixtures, then export a new <code>controllables.py</code>.</p>
+        </div>
+
+        <section class="panel-section">
+          <label class="label" for="searchInput">Search</label>
+          <input id="searchInput" class="text-input" type="search" placeholder="Filter by name, group or tag" />
+        </section>
+
+        <section class="panel-section list-section">
+          <div class="section-row">
+            <h2>Fixtures</h2>
+            <span id="fixtureCount" class="badge">0</span>
+          </div>
+          <div id="fixtureList" class="fixture-list"></div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-row">
+            <h2>Selection</h2>
+            <span id="dirtyBadge" class="badge">Clean</span>
+          </div>
+
+          <div id="selectionPlaceholder" class="empty-state">
+            Select a fixture in the list or click it in the viewport.
+          </div>
+
+          <div id="selectionForm" class="selection-form" hidden>
+            <p id="selectionTitle" class="selection-title"></p>
+            <p id="selectionMeta" class="selection-meta"></p>
+
+            <div class="input-grid">
+              <label class="numeric-field">
+                <span>X</span>
+                <input id="posX" type="number" step="0.01" />
+              </label>
+              <label class="numeric-field">
+                <span>Y</span>
+                <input id="posY" type="number" step="0.01" />
+              </label>
+              <label class="numeric-field">
+                <span>Z</span>
+                <input id="posZ" type="number" step="0.01" />
+              </label>
+              <label class="numeric-field">
+                <span>Rot X</span>
+                <input id="rotX" type="number" step="1" />
+              </label>
+              <label class="numeric-field">
+                <span>Rot Y</span>
+                <input id="rotY" type="number" step="1" />
+              </label>
+              <label class="numeric-field">
+                <span>Rot Z</span>
+                <input id="rotZ" type="number" step="1" />
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button id="resetSelectedButton" class="ghost-button" type="button">Reset Selected</button>
+              <button id="focusSelectedButton" class="ghost-button" type="button">Frame Selected</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <h2>Export</h2>
+          <label class="label" for="outputPathInput">Write-to path</label>
+          <input id="outputPathInput" class="text-input" type="text" />
+          <div class="button-row button-row-wide">
+            <button id="downloadButton" class="primary-button" type="button">Download</button>
+            <button id="writeButton" class="ghost-button" type="button">Write File</button>
+          </div>
+          <div class="button-row button-row-wide">
+            <button id="resetAllButton" class="ghost-button" type="button">Reset All</button>
+            <button id="reloadButton" class="ghost-button" type="button">Reload</button>
+          </div>
+          <p class="hint">Download returns a new file. Write File stores it directly inside the parent project.</p>
+        </section>
+      </aside>
+
+      <main class="stage">
+        <header class="toolbar">
+          <div class="toolbar-group">
+            <button id="translateModeButton" class="mode-button is-active" type="button">Translate</button>
+            <button id="rotateModeButton" class="mode-button" type="button">Rotate</button>
+          </div>
+          <div class="toolbar-group">
+            <button id="localSpaceButton" class="mode-button is-active" type="button">Local</button>
+            <button id="worldSpaceButton" class="mode-button" type="button">World</button>
+          </div>
+          <div class="toolbar-group toolbar-group-grow">
+            <button id="frameAllButton" class="mode-button" type="button">Frame All</button>
+            <span id="statusLine" class="status-line">Loading fixture data...</span>
+          </div>
+        </header>
+
+        <div id="viewport" class="viewport"></div>
+
+        <footer class="footer-note">
+          Click to select. <kbd>T</kbd> translate, <kbd>R</kbd> rotate, <kbd>F</kbd> frame, <kbd>Esc</kbd> clear selection.
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>
