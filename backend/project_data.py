@@ -11,16 +11,31 @@ from typing import Iterable
 
 CONFIG_RELATIVE_PATH = Path("config/controllables.py")
 DEFAULT_OUTPUT_RELATIVE_PATH = Path("config/controllables.edited.py")
+EDITABLE_FIELD_NAMES = [
+    "name",
+    "type",
+    "tags",
+    "artnet_in_universe",
+    "artnet_out_mapping",
+    "dmx_out",
+    "pixelinfo",
+]
+
+
+@dataclass(frozen=True)
+class SourceRange:
+    start: int
+    end: int
 
 
 @dataclass(frozen=True)
 class FixtureSourceRef:
     group_name: str
     index: int
-    position_start: int
-    position_end: int
-    orientation_start: int
-    orientation_end: int
+    position_range: SourceRange
+    orientation_range: SourceRange
+    editable_fields: dict[str, SourceRange]
+    editable_field_order: list[str]
 
 
 def discover_project_root(anchor: Path | None = None) -> Path:
@@ -141,13 +156,33 @@ def parse_source_refs(source_text: str) -> dict[tuple[str, int], FixtureSourceRe
             if position_node is None or orientation_node is None:
                 continue
 
+            editable_fields: dict[str, SourceRange] = {}
+            editable_field_order: list[str] = []
+            for key_node, value_node in zip(item_node.keys, item_node.values):
+                if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
+                    continue
+                key_name = key_node.value
+                if key_name not in EDITABLE_FIELD_NAMES:
+                    continue
+                editable_field_order.append(key_name)
+                editable_fields[key_name] = SourceRange(
+                    start=_absolute_offset(offsets, value_node.lineno, value_node.col_offset),
+                    end=_absolute_offset(offsets, value_node.end_lineno, value_node.end_col_offset),
+                )
+
             refs[(group_key.value, index)] = FixtureSourceRef(
                 group_name=group_key.value,
                 index=index,
-                position_start=_absolute_offset(offsets, position_node.lineno, position_node.col_offset),
-                position_end=_absolute_offset(offsets, position_node.end_lineno, position_node.end_col_offset),
-                orientation_start=_absolute_offset(offsets, orientation_node.lineno, orientation_node.col_offset),
-                orientation_end=_absolute_offset(offsets, orientation_node.end_lineno, orientation_node.end_col_offset),
+                position_range=SourceRange(
+                    start=_absolute_offset(offsets, position_node.lineno, position_node.col_offset),
+                    end=_absolute_offset(offsets, position_node.end_lineno, position_node.end_col_offset),
+                ),
+                orientation_range=SourceRange(
+                    start=_absolute_offset(offsets, orientation_node.lineno, orientation_node.col_offset),
+                    end=_absolute_offset(offsets, orientation_node.end_lineno, orientation_node.end_col_offset),
+                ),
+                editable_fields=editable_fields,
+                editable_field_order=editable_field_order,
             )
 
     return refs
@@ -183,19 +218,36 @@ def _fixture_points(pixelinfo: Iterable[object]) -> list[list[float]]:
     return points
 
 
-def get_fixture_payload(project_root: Path) -> dict[str, object]:
+def _emit_progress(progress_callback, percent: int, message: str) -> None:
+    if progress_callback is not None:
+        progress_callback(percent, message)
+
+
+def get_fixture_payload(project_root: Path, progress_callback=None) -> dict[str, object]:
     project_root = project_root.resolve()
+    _emit_progress(progress_callback, 5, "Reading controllables.py")
     source_text = (project_root / CONFIG_RELATIVE_PATH).read_text(encoding="utf-8")
+    _emit_progress(progress_callback, 15, "Parsing fixture source")
     refs = parse_source_refs(source_text)
+    _emit_progress(progress_callback, 35, "Importing runtime config")
     config_controllables = load_runtime_config(project_root)
 
     fixtures: list[dict[str, object]] = []
+    total_items = sum(len(group_data["controllables"]) for group_data in config_controllables.groups.values())
+    processed_items = 0
     for group_name, group_data in config_controllables.groups.items():
+        _emit_progress(progress_callback, 40, f"Loading group {group_name}")
         for index, item in enumerate(group_data["controllables"]):
+            processed_items += 1
             if (group_name, index) not in refs:
                 continue
 
             orientation = item["orientation"]
+            source_ref = refs[(group_name, index)]
+            editable_fields = {}
+            for field_name in source_ref.editable_field_order:
+                field_range = source_ref.editable_fields[field_name]
+                editable_fields[field_name] = source_text[field_range.start:field_range.end]
             fixture = {
                 "id": f"{group_name}:{index}",
                 "group": group_name,
@@ -215,14 +267,18 @@ def get_fixture_payload(project_root: Path) -> dict[str, object]:
                 "artnetInUniverse": item.get("artnet_in_universe"),
                 "dmxOut": list(item["dmx_out"]) if "dmx_out" in item else None,
                 "pointCount": len(item["pixelinfo"]) if "pixelinfo" in item else 0,
+                "editableFields": editable_fields,
+                "editableFieldOrder": source_ref.editable_field_order,
             }
 
             if "pixelinfo" in item:
                 fixture["points"] = _fixture_points(item["pixelinfo"])
 
             fixtures.append(fixture)
+            percent = 40 + int((processed_items / max(total_items, 1)) * 55)
+            _emit_progress(progress_callback, min(percent, 95), f"Loaded {fixture['name']}")
 
-    return {
+    payload = {
         "projectRoot": str(project_root),
         "configPath": str(project_root / CONFIG_RELATIVE_PATH),
         "defaultOutputPath": str(project_root / DEFAULT_OUTPUT_RELATIVE_PATH),
@@ -232,6 +288,8 @@ def get_fixture_payload(project_root: Path) -> dict[str, object]:
         },
         "fixtures": fixtures,
     }
+    _emit_progress(progress_callback, 100, f"Loaded {len(fixtures)} fixtures")
+    return payload
 
 
 def export_config_text(project_root: Path, fixtures: Iterable[dict[str, object]]) -> str:
@@ -260,8 +318,18 @@ def export_config_text(project_root: Path, fixtures: Iterable[dict[str, object]]
             raise ValueError(f"Fixture {fixture_id} has invalid orientation length")
 
         ref = refs[key]
-        replacements.append((ref.position_start, ref.position_end, _format_vector(position)))
-        replacements.append((ref.orientation_start, ref.orientation_end, _format_quaternion(orientation)))
+        replacements.append((ref.position_range.start, ref.position_range.end, _format_vector(position)))
+        replacements.append((ref.orientation_range.start, ref.orientation_range.end, _format_quaternion(orientation)))
+
+        editable_fields = fixture.get("editableFields", {})
+        if isinstance(editable_fields, dict):
+            for field_name, field_value in editable_fields.items():
+                if field_name not in ref.editable_fields:
+                    continue
+                if not isinstance(field_value, str):
+                    raise ValueError(f"Fixture {fixture_id} field {field_name} must be a string")
+                field_range = ref.editable_fields[field_name]
+                replacements.append((field_range.start, field_range.end, field_value))
 
     rewritten = source_text
     for start, end, replacement in sorted(replacements, key=lambda item: item[0], reverse=True):

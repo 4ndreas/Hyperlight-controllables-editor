@@ -1,5 +1,5 @@
 param(
-    [string]$Host = "127.0.0.1",
+    [string]$BindHost = "127.0.0.1",
     [int]$Port = 8765,
     [switch]$Rebuild
 )
@@ -28,4 +28,4 @@ finally {
     Pop-Location
 }
 
-& $PythonExe (Join-Path $EditorRoot "server.py") --host $Host --port $Port --project-root $ProjectRoot
+& $PythonExe (Join-Path $EditorRoot "server.py") --host $BindHost --port $Port --project-root $ProjectRoot

@@ -21,7 +21,8 @@
 
 body {
   margin: 0;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background:
     radial-gradient(circle at top right, rgba(240, 178, 77, 0.12), transparent 30%),
     radial-gradient(circle at bottom left, rgba(55, 121, 159, 0.24), transparent 35%),
@@ -41,8 +42,8 @@ kbd {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  min-height: 100vh;
+  grid-template-columns: 320px minmax(0, 1fr) 400px;
+  height: 100vh;
 }
 
 .panel {
@@ -57,8 +58,26 @@ kbd {
   overflow-y: auto;
 }
 
+.panel-nav {
+  border-right: 1px solid var(--line);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel-editor {
+  border-left: 1px solid var(--line);
+  border-right: none;
+}
+
+.list-section {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .brand h1,
-.panel-section h2 {
+.panel-section h2,
+.editor-block h3 {
   margin: 0;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -122,22 +141,100 @@ kbd {
 }
 
 .fixture-list {
+  display: block;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-y: scroll;
+  padding-right: 0.2rem;
+  scrollbar-gutter: stable;
+}
+
+.fixture-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.fixture-list::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 999px;
+}
+
+.fixture-list::-webkit-scrollbar-thumb {
+  background: rgba(94, 181, 255, 0.28);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.fixture-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(240, 178, 77, 0.5);
+  background-clip: padding-box;
+}
+
+.fixture-tree-group {
+  display: block;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(9, 17, 24, 0.55);
+  overflow: hidden;
+  margin-bottom: 0.6rem;
+}
+
+.fixture-tree-group[open] {
+  border-color: var(--line-strong);
+}
+
+.fixture-tree-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.7rem 0.8rem;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.fixture-tree-summary::-webkit-details-marker {
+  display: none;
+}
+
+.fixture-tree-summary::before {
+  content: ">";
+  color: var(--accent);
+  font-size: 0.8rem;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+
+.fixture-tree-group[open] .fixture-tree-summary::before {
+  transform: rotate(90deg);
+}
+
+.fixture-tree-title {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.fixture-tree-items {
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  min-height: 120px;
-  max-height: 36vh;
-  overflow-y: auto;
+  gap: 0.3rem;
+  padding: 0 0.4rem 0.45rem;
 }
 
 .fixture-button {
   width: 100%;
   text-align: left;
-  border: 1px solid var(--line);
-  background: rgba(9, 17, 24, 0.75);
+  border: 1px solid transparent;
+  background: rgba(9, 17, 24, 0.38);
   color: var(--text);
-  border-radius: 14px;
-  padding: 0.8rem 0.85rem;
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
   transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 
@@ -153,14 +250,15 @@ kbd {
 
 .fixture-name {
   display: block;
-  font-weight: 700;
+  font-weight: 600;
+  font-size: 0.84rem;
 }
 
 .fixture-meta {
   display: block;
   margin-top: 0.2rem;
   color: var(--muted);
-  font-size: 0.88rem;
+  font-size: 0.74rem;
 }
 
 .badge {
@@ -187,6 +285,16 @@ kbd {
   gap: 0.9rem;
 }
 
+.editor-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(7, 14, 20, 0.5);
+}
+
 .input-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -208,6 +316,57 @@ kbd {
 
 .button-row-wide > * {
   flex: 1;
+}
+
+.nudge-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 56px 56px;
+  gap: 0.6rem;
+  align-items: end;
+}
+
+.nudge-step {
+  margin: 0;
+}
+
+.metadata-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.metadata-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.metadata-field textarea,
+.metadata-field input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(6, 11, 16, 0.7);
+  color: var(--text);
+  padding: 0.7rem 0.8rem;
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
+.metadata-field textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.metadata-field textarea:focus,
+.metadata-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(240, 178, 77, 0.18);
+}
+
+.ghost-button.is-active-axis {
+  border-color: rgba(94, 181, 255, 0.72);
+  color: #9ed8ff;
 }
 
 .primary-button,
@@ -260,6 +419,35 @@ kbd {
   flex: 1;
 }
 
+.status-stack {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 180px;
+}
+
+.load-progress {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--line);
+}
+
+.load-progress[aria-hidden="true"] {
+  opacity: 0.28;
+}
+
+.load-progress-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(94, 181, 255, 0.7), rgba(240, 178, 77, 0.95));
+  transition: width 140ms ease;
+}
+
 .viewport {
   position: relative;
   min-height: 60vh;
@@ -281,11 +469,13 @@ kbd {
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(55vh, 1fr);
+    grid-template-rows: auto minmax(55vh, 1fr) auto;
+    height: 100vh;
   }
 
   .panel {
     border-right: none;
+    border-left: none;
     border-bottom: 1px solid var(--line);
   }
 

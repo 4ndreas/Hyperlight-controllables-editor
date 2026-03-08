@@ -22,6 +22,15 @@ const dom = {
   rotX: document.querySelector("#rotX"),
   rotY: document.querySelector("#rotY"),
   rotZ: document.querySelector("#rotZ"),
+  axisStatus: document.querySelector("#axisStatus"),
+  axisFreeButton: document.querySelector("#axisFreeButton"),
+  axisXButton: document.querySelector("#axisXButton"),
+  axisYButton: document.querySelector("#axisYButton"),
+  axisZButton: document.querySelector("#axisZButton"),
+  nudgeStepInput: document.querySelector("#nudgeStepInput"),
+  nudgeNegativeButton: document.querySelector("#nudgeNegativeButton"),
+  nudgePositiveButton: document.querySelector("#nudgePositiveButton"),
+  metadataFields: document.querySelector("#metadataFields"),
   resetSelectedButton: document.querySelector("#resetSelectedButton"),
   focusSelectedButton: document.querySelector("#focusSelectedButton"),
   outputPathInput: document.querySelector("#outputPathInput"),
@@ -34,7 +43,9 @@ const dom = {
   localSpaceButton: document.querySelector("#localSpaceButton"),
   worldSpaceButton: document.querySelector("#worldSpaceButton"),
   frameAllButton: document.querySelector("#frameAllButton"),
-  statusLine: document.querySelector("#statusLine")
+  statusLine: document.querySelector("#statusLine"),
+  loadProgress: document.querySelector("#loadProgress"),
+  loadProgressBar: document.querySelector("#loadProgressBar")
 };
 
 const state = {
@@ -45,7 +56,9 @@ const state = {
   searchTerm: "",
   transformMode: "translate",
   transformSpace: "local",
-  rayTargets: []
+  transformAxis: null,
+  rayTargets: [],
+  expandedGroups: new Set()
 };
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -66,6 +79,7 @@ orbitControls.dampingFactor = 0.08;
 const transformControls = new TransformControls(camera, renderer.domElement);
 transformControls.setSpace(state.transformSpace);
 transformControls.setMode(state.transformMode);
+transformControls.size = 1.25;
 transformControls.addEventListener("dragging-changed", (event) => {
   orbitControls.enabled = !event.value;
 });
@@ -83,6 +97,7 @@ scene.add(fixtureGroup);
 
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
+let viewportResizeObserver = null;
 
 init().catch((error) => {
   console.error(error);
@@ -93,6 +108,7 @@ async function init() {
   dom.viewport.appendChild(renderer.domElement);
   setupScene();
   bindUi();
+  updateAxisUi();
   await loadFixtures();
   resizeRenderer();
   animate();
@@ -115,6 +131,10 @@ function setupScene() {
   renderer.domElement.addEventListener("pointerdown", onPointerDown);
   window.addEventListener("resize", resizeRenderer);
   window.addEventListener("keydown", onKeyDown);
+  viewportResizeObserver = new ResizeObserver(() => {
+    resizeRenderer();
+  });
+  viewportResizeObserver.observe(dom.viewport);
 }
 
 function bindUi() {
@@ -172,15 +192,28 @@ function bindUi() {
   dom.rotateModeButton.addEventListener("click", () => setTransformMode("rotate"));
   dom.localSpaceButton.addEventListener("click", () => setTransformSpace("local"));
   dom.worldSpaceButton.addEventListener("click", () => setTransformSpace("world"));
+  dom.axisFreeButton.addEventListener("click", () => setTransformAxis(null));
+  dom.axisXButton.addEventListener("click", () => setTransformAxis("X"));
+  dom.axisYButton.addEventListener("click", () => setTransformAxis("Y"));
+  dom.axisZButton.addEventListener("click", () => setTransformAxis("Z"));
+  dom.nudgeNegativeButton.addEventListener("click", () => nudgeSelectedFixture(-1));
+  dom.nudgePositiveButton.addEventListener("click", () => nudgeSelectedFixture(1));
   dom.frameAllButton.addEventListener("click", () => frameObjects([...state.fixtureVisuals.values()].map((visual) => visual.root)));
 }
 
 async function loadFixtures() {
-  const response = await fetch("./api/fixtures");
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error || "Failed to load fixture data");
+  setLoadingProgress(2, "Starting fixture load");
+
+  const startResponse = await fetch("./api/load-jobs", {
+    method: "POST",
+    cache: "no-store"
+  });
+  const startPayload = await startResponse.json();
+  if (!startResponse.ok) {
+    throw new Error(startPayload.error || "Failed to start fixture load");
   }
+
+  const payload = await waitForLoadJob(startPayload.jobId);
 
   state.fixtures = payload.fixtures;
   state.originalTransforms.clear();
@@ -198,7 +231,8 @@ async function loadFixtures() {
   for (const fixture of state.fixtures) {
     state.originalTransforms.set(fixture.id, {
       position: fixture.position.slice(),
-      orientation: fixture.orientation.slice()
+      orientation: fixture.orientation.slice(),
+      editableFields: cloneEditableFields(fixture.editableFields)
     });
     const visual = createFixtureVisual(fixture);
     state.fixtureVisuals.set(fixture.id, visual);
@@ -210,7 +244,32 @@ async function loadFixtures() {
   selectFixture(null);
   updateDirtyState();
   frameObjects([...state.fixtureVisuals.values()].map((visual) => visual.root));
+  setLoadingProgress(100, `Loaded ${state.fixtures.length} active fixtures from config/controllables.py`);
   setStatus(`Loaded ${state.fixtures.length} active fixtures from config/controllables.py`);
+}
+
+async function waitForLoadJob(jobId) {
+  while (true) {
+    const response = await fetch(`./api/load-jobs/${jobId}`, {
+      cache: "no-store"
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Failed to read load progress");
+    }
+
+    setLoadingProgress(payload.progress || 0, payload.message || "Loading fixture data...");
+
+    if (payload.status === "completed") {
+      return payload.payload;
+    }
+
+    if (payload.status === "failed") {
+      throw new Error(payload.error || payload.message || "Fixture load failed");
+    }
+
+    await sleep(200);
+  }
 }
 
 function addRoomGuide(roomBounds) {
@@ -275,7 +334,7 @@ function createFixtureVisual(fixture) {
   root.userData.fixtureId = fixture.id;
 
   const handle = new THREE.Mesh(
-    new THREE.SphereGeometry(0.09, 18, 18),
+    new THREE.SphereGeometry(0.11, 20, 20),
     new THREE.MeshStandardMaterial({
       color,
       emissive: color.clone().multiplyScalar(0.14),
@@ -286,8 +345,19 @@ function createFixtureVisual(fixture) {
   handle.userData.fixtureId = fixture.id;
   root.add(handle);
 
+  const selectionProxy = new THREE.Mesh(
+    new THREE.SphereGeometry(fixture.kind === "synth" ? 0.28 : 0.24, 16, 16),
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0.0,
+      depthWrite: false
+    })
+  );
+  selectionProxy.userData.fixtureId = fixture.id;
+  root.add(selectionProxy);
+
   const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(0.16, 18, 18),
+    new THREE.SphereGeometry(0.22, 18, 18),
     new THREE.MeshBasicMaterial({
       color: 0xf0b24d,
       wireframe: true,
@@ -300,7 +370,7 @@ function createFixtureVisual(fixture) {
 
   root.add(new THREE.AxesHelper(fixture.kind === "synth" ? 0.45 : 0.35));
 
-  const pickTargets = [handle];
+  const pickTargets = [selectionProxy, handle];
 
   if (fixture.kind === "synth" && Array.isArray(fixture.points) && fixture.points.length > 0) {
     const geometry = new THREE.BufferGeometry();
@@ -318,7 +388,6 @@ function createFixtureVisual(fixture) {
     );
     pointCloud.userData.fixtureId = fixture.id;
     root.add(pointCloud);
-    pickTargets.push(pointCloud);
   } else {
     const arrow = new THREE.Group();
     const shaft = new THREE.Mesh(
@@ -366,26 +435,60 @@ function renderFixtureList() {
   const fixtures = state.fixtures.filter((fixture) => matchesSearch(fixture, state.searchTerm));
   dom.fixtureCount.textContent = `${fixtures.length}`;
 
-  for (const fixture of fixtures) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "fixture-button";
-    if (fixture.id === state.selectedId) {
-      button.classList.add("is-selected");
+  const groupedFixtures = groupFixtures(fixtures);
+  for (const [groupName, items] of groupedFixtures) {
+    const details = document.createElement("details");
+    details.className = "fixture-tree-group";
+    details.open = state.searchTerm.length > 0 || state.expandedGroups.has(groupName) || items.some((fixture) => fixture.id === state.selectedId);
+    details.addEventListener("toggle", () => {
+      if (details.open) {
+        state.expandedGroups.add(groupName);
+      } else {
+        state.expandedGroups.delete(groupName);
+      }
+    });
+
+    const summary = document.createElement("summary");
+    summary.className = "fixture-tree-summary";
+
+    const title = document.createElement("span");
+    title.className = "fixture-tree-title";
+    title.textContent = groupName;
+    summary.appendChild(title);
+
+    const count = document.createElement("span");
+    count.className = "badge";
+    count.textContent = `${items.length}`;
+    summary.appendChild(count);
+    details.appendChild(summary);
+
+    const itemContainer = document.createElement("div");
+    itemContainer.className = "fixture-tree-items";
+
+    for (const fixture of items) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "fixture-button";
+      if (fixture.id === state.selectedId) {
+        button.classList.add("is-selected");
+      }
+      button.addEventListener("click", () => selectFixture(fixture.id));
+
+      const name = document.createElement("span");
+      name.className = "fixture-name";
+      name.textContent = fixture.name;
+      button.appendChild(name);
+
+      const meta = document.createElement("span");
+      meta.className = "fixture-meta";
+      meta.textContent = `${fixture.kind} | ${fixture.pointCount || 0} pts`;
+      button.appendChild(meta);
+
+      itemContainer.appendChild(button);
     }
-    button.addEventListener("click", () => selectFixture(fixture.id));
 
-    const name = document.createElement("span");
-    name.className = "fixture-name";
-    name.textContent = fixture.name;
-    button.appendChild(name);
-
-    const meta = document.createElement("span");
-    meta.className = "fixture-meta";
-    meta.textContent = `${fixture.group} | ${fixture.kind} | ${fixture.pointCount || 0} pts`;
-    button.appendChild(meta);
-
-    dom.fixtureList.appendChild(button);
+    details.appendChild(itemContainer);
+    dom.fixtureList.appendChild(details);
   }
 }
 
@@ -422,6 +525,8 @@ function selectFixture(fixtureId) {
     dom.selectionPlaceholder.hidden = false;
     dom.selectionTitle.textContent = "";
     dom.selectionMeta.textContent = "";
+    dom.metadataFields.replaceChildren();
+    updateAxisUi();
     return;
   }
 
@@ -436,6 +541,8 @@ function selectFixture(fixtureId) {
   dom.selectionTitle.textContent = visual.fixture.name;
   dom.selectionMeta.textContent = `${visual.fixture.group} | ${visual.fixture.kind} | ${visual.fixture.role || "No role"}`;
   syncSelectionInputs();
+  renderMetadataFields(visual.fixture);
+  updateAxisUi();
 }
 
 function syncSelectionInputs() {
@@ -467,6 +574,38 @@ function applySelectionInputs() {
   updateDirtyState();
 }
 
+function renderMetadataFields(fixture) {
+  dom.metadataFields.replaceChildren();
+
+  const fieldOrder = fixture.editableFieldOrder || Object.keys(fixture.editableFields || {});
+  if (fieldOrder.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No editable fixture fields were found in this source block.";
+    dom.metadataFields.appendChild(empty);
+    return;
+  }
+
+  for (const fieldName of fieldOrder) {
+    const wrapper = document.createElement("label");
+    wrapper.className = "metadata-field";
+
+    const title = document.createElement("span");
+    title.textContent = fieldName;
+    wrapper.appendChild(title);
+
+    const fieldValue = fixture.editableFields[fieldName] ?? "";
+    const control = isSingleLineField(fieldName) ? document.createElement("input") : document.createElement("textarea");
+    control.value = fieldValue;
+    control.addEventListener("input", () => {
+      fixture.editableFields[fieldName] = control.value;
+      updateDirtyState();
+    });
+    wrapper.appendChild(control);
+    dom.metadataFields.appendChild(wrapper);
+  }
+}
+
 function resetSelectedFixture() {
   const visual = getSelectedVisual();
   if (!visual) {
@@ -496,6 +635,10 @@ function applyOriginalTransform(fixtureId) {
   }
   visual.root.position.fromArray(original.position);
   visual.root.quaternion.set(...original.orientation);
+  visual.fixture.editableFields = cloneEditableFields(original.editableFields);
+  if (fixtureId === state.selectedId) {
+    renderMetadataFields(visual.fixture);
+  }
 }
 
 function updateDirtyState() {
@@ -503,7 +646,8 @@ function updateDirtyState() {
   for (const fixture of state.fixtures) {
     const current = getCurrentFixtureTransform(fixture.id);
     const original = state.originalTransforms.get(fixture.id);
-    if (!arraysClose(current.position, original.position, 1e-6) || !arraysClose(current.orientation, original.orientation, 1e-6)) {
+    const metadataDirty = !editableFieldsEqual(fixture.editableFields, original.editableFields);
+    if (!arraysClose(current.position, original.position, 1e-6) || !arraysClose(current.orientation, original.orientation, 1e-6) || metadataDirty) {
       dirty = true;
       break;
     }
@@ -542,12 +686,14 @@ async function exportFixtures(outputPath = null) {
     outputPath,
     fixtures: state.fixtures.map((fixture) => ({
       id: fixture.id,
-      ...getCurrentFixtureTransform(fixture.id)
+      ...getCurrentFixtureTransform(fixture.id),
+      editableFields: fixture.editableFields
     }))
   };
 
   const response = await fetch("./api/export", {
     method: "POST",
+    cache: "no-store",
     headers: {
       "Content-Type": "application/json"
     },
@@ -575,6 +721,7 @@ function setTransformMode(mode) {
   transformControls.setMode(mode);
   dom.translateModeButton.classList.toggle("is-active", mode === "translate");
   dom.rotateModeButton.classList.toggle("is-active", mode === "rotate");
+  updateAxisUi();
 }
 
 function setTransformSpace(space) {
@@ -584,7 +731,42 @@ function setTransformSpace(space) {
   dom.worldSpaceButton.classList.toggle("is-active", space === "world");
 }
 
+function setTransformAxis(axis) {
+  state.transformAxis = axis;
+  updateAxisUi();
+}
+
+function updateAxisUi() {
+  const axis = state.transformAxis;
+  dom.axisStatus.textContent = axis || "Free";
+  dom.axisFreeButton.classList.toggle("is-active-axis", axis === null);
+  dom.axisXButton.classList.toggle("is-active-axis", axis === "X");
+  dom.axisYButton.classList.toggle("is-active-axis", axis === "Y");
+  dom.axisZButton.classList.toggle("is-active-axis", axis === "Z");
+  dom.nudgeNegativeButton.disabled = axis === null || !state.selectedId;
+  dom.nudgePositiveButton.disabled = axis === null || !state.selectedId;
+  transformControls.showX = axis === null || axis === "X";
+  transformControls.showY = axis === null || axis === "Y";
+  transformControls.showZ = axis === null || axis === "Z";
+}
+
+function nudgeSelectedFixture(direction) {
+  const visual = getSelectedVisual();
+  if (!visual || !state.transformAxis) {
+    return;
+  }
+
+  const step = Number(dom.nudgeStepInput.value || 0.1) * direction;
+  const axis = state.transformAxis.toLowerCase();
+  visual.root.position[axis] += step;
+  syncSelectionInputs();
+  updateDirtyState();
+}
+
 function onPointerDown(event) {
+  if (transformControls.dragging) {
+    return;
+  }
   const rect = renderer.domElement.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -680,6 +862,47 @@ function colorForGroup(groupName) {
 function setStatus(message, isError = false) {
   dom.statusLine.textContent = message;
   dom.statusLine.style.color = isError ? "var(--danger)" : "var(--muted)";
+}
+
+function setLoadingProgress(progress, message) {
+  const clamped = Math.max(0, Math.min(100, Number(progress) || 0));
+  dom.loadProgressBar.style.width = `${clamped}%`;
+  dom.loadProgress.setAttribute("aria-hidden", clamped >= 100 ? "true" : "false");
+  if (message) {
+    setStatus(message);
+  }
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function cloneEditableFields(editableFields) {
+  return Object.fromEntries(Object.entries(editableFields || {}).map(([key, value]) => [key, value]));
+}
+
+function editableFieldsEqual(left, right) {
+  const leftEntries = Object.entries(left || {});
+  const rightEntries = Object.entries(right || {});
+  if (leftEntries.length !== rightEntries.length) {
+    return false;
+  }
+  return leftEntries.every(([key, value]) => right?.[key] === value);
+}
+
+function isSingleLineField(fieldName) {
+  return ["name", "type", "artnet_in_universe", "dmx_out", "pixelinfo"].includes(fieldName);
+}
+
+function groupFixtures(fixtures) {
+  const grouped = new Map();
+  for (const fixture of fixtures) {
+    if (!grouped.has(fixture.group)) {
+      grouped.set(fixture.group, []);
+    }
+    grouped.get(fixture.group).push(fixture);
+  }
+  return [...grouped.entries()].sort((left, right) => left[0].localeCompare(right[0]));
 }
 
 function animate() {
