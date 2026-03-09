@@ -9,7 +9,7 @@ EDITOR_ROOT = Path(__file__).resolve().parents[1]
 if str(EDITOR_ROOT) not in sys.path:
     sys.path.insert(0, str(EDITOR_ROOT))
 
-from backend.project_data import discover_project_root, export_config_text, get_fixture_payload
+from backend.project_data import discover_project_root, export_config_text, get_fixture_payload, preview_pixelinfo_expression
 
 
 class ProjectDataTests(unittest.TestCase):
@@ -23,6 +23,9 @@ class ProjectDataTests(unittest.TestCase):
         fixture_ids = {fixture["id"] for fixture in self.sample_payload["fixtures"]}
         self.assertIn(self.sample_fixture["id"], fixture_ids)
         self.assertGreater(len(self.sample_payload["fixtures"]), 0)
+        self.assertGreater(len(self.sample_payload["fixtureLibrary"]), 0)
+        self.assertGreater(len(self.sample_payload["groupDefinitions"]), 0)
+        self.assertGreater(len(self.sample_payload["pixelFunctionLibrary"]), 0)
         self.assertGreater(len(self.sample_fixture["editableFields"]), 0)
 
     def test_loads_current_fixtures_with_progress(self) -> None:
@@ -37,25 +40,103 @@ class ProjectDataTests(unittest.TestCase):
         self.assertGreater(len(payload["fixtures"]), 0)
 
     def test_export_rewrites_fixture_transform(self) -> None:
-        editable_fields = dict(self.sample_fixture["editableFields"])
-        if "artnet_in_universe" in editable_fields:
-            editable_fields["artnet_in_universe"] = "999"
+        fixtures = []
+        for fixture in self.sample_payload["fixtures"]:
+            editable_fields = dict(fixture["editableFields"])
+            position = list(fixture["position"])
+            orientation = list(fixture["orientation"])
+            if fixture["id"] == self.sample_fixture["id"]:
+                position = [1.25, 2.5, 3.75]
+                orientation = [0.0, 0.0, 0.0, 1.0]
+                if "artnet_in_universe" in editable_fields:
+                    editable_fields["artnet_in_universe"] = "999"
+
+            fixtures.append(
+                {
+                    "id": fixture["id"],
+                    "group": fixture["group"],
+                    "position": position,
+                    "orientation": orientation,
+                    "editableFields": editable_fields,
+                    "editableFieldOrder": list(fixture["editableFieldOrder"]),
+                }
+            )
 
         content = export_config_text(
             self.project_root,
-            [
-                {
-                    "id": self.sample_fixture["id"],
-                    "position": [1.25, 2.5, 3.75],
-                    "orientation": [0.0, 0.0, 0.0, 1.0],
-                    "editableFields": editable_fields,
-                }
-            ],
+            fixtures,
+            self.sample_payload["groupDefinitions"],
         )
         self.assertIn('"position": [1.25, 2.5, 3.75]', content)
         self.assertIn('Quaternion([0.0, 0.0, 0.0, 1.0])', content)
-        if "artnet_in_universe" in editable_fields:
+        if "artnet_in_universe" in self.sample_fixture["editableFields"]:
             self.assertIn('"artnet_in_universe": 999', content)
+
+    def test_export_supports_added_and_removed_fixture_groups(self) -> None:
+        single_fixture_groups = [
+            group_definition["name"]
+            for group_definition in self.sample_payload["groupDefinitions"]
+            if sum(1 for fixture in self.sample_payload["fixtures"] if fixture["group"] == group_definition["name"]) == 1
+        ]
+        self.assertGreater(len(single_fixture_groups), 0)
+        removed_group = single_fixture_groups[0]
+
+        template = self.sample_payload["fixtureLibrary"][0]
+        new_group_name = "FixtureLibraryTest"
+        template_group_definition = next(
+            group_definition
+            for group_definition in self.sample_payload["groupDefinitions"]
+            if group_definition["name"] == template["group"]
+        )
+        new_group_definition = {
+            "name": new_group_name,
+            "fieldOrder": list(template_group_definition["fieldOrder"]),
+            "fields": dict(template_group_definition["fields"]),
+        }
+        if "arrangement" in new_group_definition["fields"]:
+            new_group_definition["fields"]["arrangement"] = "[1]"
+
+        new_editable_fields = dict(template["editableFields"])
+        if "name" in new_editable_fields:
+            new_editable_fields["name"] = '"Fixture Library Test 1"'
+
+        fixtures = [
+            {
+                "id": fixture["id"],
+                "group": fixture["group"],
+                "position": list(fixture["position"]),
+                "orientation": list(fixture["orientation"]),
+                "editableFields": dict(fixture["editableFields"]),
+                "editableFieldOrder": list(fixture["editableFieldOrder"]),
+            }
+            for fixture in self.sample_payload["fixtures"]
+            if fixture["group"] != removed_group
+        ]
+        fixtures.append(
+            {
+                "id": "added:test-fixture",
+                "group": new_group_name,
+                "position": [6.5, -2.0, 1.75],
+                "orientation": [0.0, 0.0, 0.0, 1.0],
+                "editableFields": new_editable_fields,
+                "editableFieldOrder": list(template["editableFieldOrder"]),
+            }
+        )
+
+        content = export_config_text(
+            self.project_root,
+            fixtures,
+            [*self.sample_payload["groupDefinitions"], new_group_definition],
+        )
+        self.assertNotIn(f'"{removed_group}": {{', content)
+        self.assertIn(f'"{new_group_name}": {{', content)
+        self.assertIn('"position": [6.5, -2.0, 1.75]', content)
+
+    def test_pixel_preview_evaluates_pixelinfo_expression(self) -> None:
+        preview = preview_pixelinfo_expression(self.project_root, "TriBar.make3()")
+        self.assertGreater(preview["pointCount"], 0)
+        self.assertEqual(preview["pointCount"], len(preview["points"]))
+        self.assertIsNotNone(preview["bounds"])
 
 
 if __name__ == "__main__":

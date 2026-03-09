@@ -10,7 +10,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from backend.project_data import discover_project_root, export_config_text, get_fixture_payload, write_export
+from backend.project_data import (
+    discover_project_root,
+    export_config_text,
+    get_fixture_payload,
+    preview_pixelinfo_expression,
+    write_export,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +87,16 @@ class EditorRequestHandler(SimpleHTTPRequestHandler):
             job_id = self._start_load_job()
             self._send_json({"jobId": job_id}, status=HTTPStatus.ACCEPTED)
             return
+        if parsed.path == "/api/pixel-preview":
+            try:
+                request_body = self._read_json()
+                expression = request_body.get("expression", "")
+                if not isinstance(expression, str):
+                    raise ValueError("Pixel preview expression must be a string")
+                self._send_json(preview_pixelinfo_expression(self.project_root, expression))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
         if parsed.path != "/api/export":
             self.send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
             return
@@ -88,8 +104,9 @@ class EditorRequestHandler(SimpleHTTPRequestHandler):
         try:
             request_body = self._read_json()
             fixtures = request_body.get("fixtures", [])
+            group_definitions = request_body.get("groupDefinitions")
             output_path = request_body.get("outputPath")
-            content = export_config_text(self.project_root, fixtures)
+            content = export_config_text(self.project_root, fixtures, group_definitions)
             saved_path = write_export(self.project_root, content, output_path if isinstance(output_path, str) else None)
             self._send_json(
                 {
