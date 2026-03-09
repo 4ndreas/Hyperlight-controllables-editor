@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.machinery
+import importlib.util
 import inspect
 import os
 import sys
@@ -9,6 +11,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import types
 from typing import Iterable
 
 
@@ -85,6 +88,74 @@ def discover_project_root(anchor: Path | None = None) -> Path:
     raise FileNotFoundError("Could not locate lightcontrol project root")
 
 
+def resolve_config_source_path(project_root: Path, config_path: str | Path | None = None) -> Path:
+    project_root = project_root.resolve()
+    if config_path is None or str(config_path).strip() == "":
+        source_path = project_root / CONFIG_RELATIVE_PATH
+    else:
+        source_candidate = Path(config_path)
+        source_path = source_candidate if source_candidate.is_absolute() else project_root / source_candidate
+
+    source_path = source_path.resolve()
+    if not source_path.exists():
+        raise FileNotFoundError(f"Config file not found: {source_path}")
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Config path is not a file: {source_path}")
+    return source_path
+
+
+def config_path_label(project_root: Path, source_path: Path) -> str:
+    project_root = project_root.resolve()
+    source_path = source_path.resolve()
+    try:
+        return str(source_path.relative_to(project_root))
+    except ValueError:
+        return str(source_path)
+
+
+def list_available_config_files(project_root: Path) -> list[dict[str, object]]:
+    project_root = project_root.resolve()
+    config_dir = project_root / CONFIG_RELATIVE_PATH.parent
+    default_source_path = resolve_config_source_path(project_root)
+    entries: list[dict[str, object]] = []
+
+    if not config_dir.exists():
+        return entries
+
+    for candidate in sorted(config_dir.iterdir(), key=lambda path: path.name.lower()):
+        if not candidate.is_file():
+            continue
+        if not candidate.name.startswith("controllables"):
+            continue
+        if candidate.name == "controllables_info.py":
+            continue
+
+        resolved = candidate.resolve()
+        entries.append(
+            {
+                "path": str(resolved),
+                "relativePath": config_path_label(project_root, resolved),
+                "label": candidate.name,
+                "isDefault": resolved == default_source_path,
+            }
+        )
+
+    entries.sort(key=lambda item: (not bool(item["isDefault"]), str(item["label"]).lower()))
+    return entries
+
+
+def default_output_path_for_source(project_root: Path, source_path: Path) -> Path:
+    project_root = project_root.resolve()
+    source_path = source_path.resolve()
+    default_source_path = resolve_config_source_path(project_root)
+    if source_path == default_source_path:
+        return (project_root / DEFAULT_OUTPUT_RELATIVE_PATH).resolve()
+
+    if source_path.name.endswith(".py"):
+        return source_path.with_name(f"{source_path.stem}.edited.py")
+    return source_path.with_name(f"{source_path.name}.edited.py")
+
+
 def bootstrap_project(project_root: Path) -> None:
     project_root = project_root.resolve()
     ext_dir = project_root / "ext"
@@ -105,11 +176,51 @@ def _reload_config_modules() -> None:
             del sys.modules[module_name]
 
 
-def load_runtime_config(project_root: Path):
+def _prepare_config_package(project_root: Path) -> types.ModuleType:
+    package_name = "config"
+    package_dir = project_root / package_name
+    package = types.ModuleType(package_name)
+    package.__file__ = str(package_dir / "__init__.py")
+    package.__package__ = package_name
+    package.__path__ = [str(package_dir)]
+    package_spec = importlib.machinery.ModuleSpec(package_name, loader=None, is_package=True)
+    package_spec.submodule_search_locations = [str(package_dir)]
+    package.__spec__ = package_spec
+    sys.modules[package_name] = package
+    return package
+
+
+def _load_source_module(module_name: str, source_path: Path):
+    loader = importlib.machinery.SourceFileLoader(module_name, str(source_path))
+    spec = importlib.util.spec_from_loader(module_name, loader)
+    if spec is None:
+        raise ImportError(f"Could not create module spec for {source_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    package_name, _, attribute_name = module_name.rpartition(".")
+    package = sys.modules.get(package_name)
+    if package is not None and attribute_name:
+        setattr(package, attribute_name, module)
+    loader.exec_module(module)
+    return module
+
+
+def load_runtime_config(project_root: Path, config_path: str | Path | None = None):
     bootstrap_project(project_root)
+    source_path = resolve_config_source_path(project_root, config_path)
     _reload_config_modules()
-    config = importlib.import_module("config")
-    return config.controllables
+    config_package = _prepare_config_package(project_root.resolve())
+    for module_name in ("local", "util", "controllables_info"):
+        try:
+            module = importlib.import_module(f"config.{module_name}")
+            setattr(config_package, module_name, module)
+        except Exception:
+            continue
+
+    controllables_module = _load_source_module("config.controllables", source_path)
+    setattr(config_package, "controllables", controllables_module)
+    return controllables_module
 
 
 def _line_offsets(source_text: str) -> list[int]:
@@ -405,7 +516,7 @@ def _pixel_device_modules(project_root: Path) -> dict[str, object]:
 def get_pixel_function_library(project_root: Path, source_text: str | None = None) -> list[dict[str, object]]:
     project_root = project_root.resolve()
     if source_text is None:
-        source_text = (project_root / CONFIG_RELATIVE_PATH).read_text(encoding="utf-8")
+        source_text = resolve_config_source_path(project_root).read_text(encoding="utf-8")
 
     examples_by_prefix = _extract_pixel_expression_examples(source_text)
     functions: list[dict[str, object]] = []
@@ -438,9 +549,10 @@ def get_pixel_function_library(project_root: Path, source_text: str | None = Non
     return sorted(functions, key=lambda item: (str(item["module"]).lower(), str(item["function"]).lower()))
 
 
-def preview_pixelinfo_expression(project_root: Path, expression: str) -> dict[str, object]:
+def preview_pixelinfo_expression(project_root: Path, expression: str, config_path: str | Path | None = None) -> dict[str, object]:
     project_root = project_root.resolve()
-    source_text = (project_root / CONFIG_RELATIVE_PATH).read_text(encoding="utf-8")
+    source_path = resolve_config_source_path(project_root, config_path)
+    source_text = source_path.read_text(encoding="utf-8")
     bootstrap_project(project_root)
     globals_dict = {"__builtins__": {}}
     globals_dict.update(_pixel_device_modules(project_root))
@@ -471,16 +583,18 @@ def preview_pixelinfo_expression(project_root: Path, expression: str) -> dict[st
     }
 
 
-def get_fixture_payload(project_root: Path, progress_callback=None) -> dict[str, object]:
+def get_fixture_payload(project_root: Path, config_path: str | Path | None = None, progress_callback=None) -> dict[str, object]:
     project_root = project_root.resolve()
-    _emit_progress(progress_callback, 5, "Reading controllables.py")
-    source_text = (project_root / CONFIG_RELATIVE_PATH).read_text(encoding="utf-8")
+    source_path = resolve_config_source_path(project_root, config_path)
+    source_label = config_path_label(project_root, source_path)
+    _emit_progress(progress_callback, 5, f"Reading {source_label}")
+    source_text = source_path.read_text(encoding="utf-8")
     _emit_progress(progress_callback, 15, "Parsing fixture source")
     parsed_source = parse_source_refs(source_text)
     _emit_progress(progress_callback, 25, "Inspecting pixel devices")
     pixel_function_library = get_pixel_function_library(project_root, source_text)
     _emit_progress(progress_callback, 35, "Importing runtime config")
-    config_controllables = load_runtime_config(project_root)
+    config_controllables = load_runtime_config(project_root, source_path)
 
     fixtures: list[dict[str, object]] = []
     fixture_library: list[dict[str, object]] = []
@@ -536,8 +650,10 @@ def get_fixture_payload(project_root: Path, progress_callback=None) -> dict[str,
 
     payload = {
         "projectRoot": str(project_root),
-        "configPath": str(project_root / CONFIG_RELATIVE_PATH),
-        "defaultOutputPath": str(project_root / DEFAULT_OUTPUT_RELATIVE_PATH),
+        "configPath": str(source_path),
+        "configLabel": source_label,
+        "availableConfigFiles": list_available_config_files(project_root),
+        "defaultOutputPath": str(default_output_path_for_source(project_root, source_path)),
         "roomBounds": {
             "min": [-8.0, -17.0, 0.0],
             "max": [8.0, 8.0, 7.5],
@@ -717,9 +833,10 @@ def export_config_text(
     project_root: Path,
     fixtures: Iterable[dict[str, object]],
     group_definitions: Iterable[dict[str, object]] | None = None,
+    config_path: str | Path | None = None,
 ) -> str:
     project_root = project_root.resolve()
-    source_path = project_root / CONFIG_RELATIVE_PATH
+    source_path = resolve_config_source_path(project_root, config_path)
     source_text = source_path.read_text(encoding="utf-8")
     parsed_source = parse_source_refs(source_text)
     group_order, group_definitions_by_name = _normalize_group_definitions(group_definitions, source_text, parsed_source)

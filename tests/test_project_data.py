@@ -26,6 +26,7 @@ class ProjectDataTests(unittest.TestCase):
         self.assertGreater(len(self.sample_payload["fixtureLibrary"]), 0)
         self.assertGreater(len(self.sample_payload["groupDefinitions"]), 0)
         self.assertGreater(len(self.sample_payload["pixelFunctionLibrary"]), 0)
+        self.assertGreater(len(self.sample_payload["availableConfigFiles"]), 0)
         self.assertGreater(len(self.sample_fixture["editableFields"]), 0)
 
     def test_loads_current_fixtures_with_progress(self) -> None:
@@ -137,6 +138,27 @@ class ProjectDataTests(unittest.TestCase):
         self.assertGreater(preview["pointCount"], 0)
         self.assertEqual(preview["pointCount"], len(preview["points"]))
         self.assertIsNotNone(preview["bounds"])
+
+    def test_loads_alternate_show_file(self) -> None:
+        alternate_show = None
+        payload = None
+        for entry in self.sample_payload["availableConfigFiles"]:
+            if entry.get("isDefault") or str(entry.get("label", "")).endswith(".py"):
+                continue
+            try:
+                payload = get_fixture_payload(self.project_root, entry["path"])
+                alternate_show = entry
+                break
+            except Exception:
+                continue
+
+        if alternate_show is None or payload is None:
+            self.skipTest("No alternate non-.py show file loaded successfully from config/")
+
+        self.assertEqual(Path(payload["configPath"]).resolve(), Path(alternate_show["path"]).resolve())
+        self.assertEqual(payload["configLabel"], alternate_show["relativePath"])
+        self.assertGreater(len(payload["fixtures"]), 0)
+        self.assertTrue(str(payload["defaultOutputPath"]).endswith(".edited.py"))
 
 
 if __name__ == "__main__":

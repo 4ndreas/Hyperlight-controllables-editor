@@ -11,10 +11,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from backend.project_data import (
+    config_path_label,
     discover_project_root,
     export_config_text,
     get_fixture_payload,
     preview_pixelinfo_expression,
+    resolve_config_source_path,
     write_export,
 )
 
@@ -84,16 +86,24 @@ class EditorRequestHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/api/load-jobs":
-            job_id = self._start_load_job()
+            request_body = self._read_json()
+            config_path = request_body.get("configPath")
+            if config_path is not None and not isinstance(config_path, str):
+                self._send_json({"error": "configPath must be a string"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            job_id = self._start_load_job(config_path if isinstance(config_path, str) else None)
             self._send_json({"jobId": job_id}, status=HTTPStatus.ACCEPTED)
             return
         if parsed.path == "/api/pixel-preview":
             try:
                 request_body = self._read_json()
                 expression = request_body.get("expression", "")
+                config_path = request_body.get("configPath")
                 if not isinstance(expression, str):
                     raise ValueError("Pixel preview expression must be a string")
-                self._send_json(preview_pixelinfo_expression(self.project_root, expression))
+                if config_path is not None and not isinstance(config_path, str):
+                    raise ValueError("configPath must be a string")
+                self._send_json(preview_pixelinfo_expression(self.project_root, expression, config_path))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -106,19 +116,25 @@ class EditorRequestHandler(SimpleHTTPRequestHandler):
             fixtures = request_body.get("fixtures", [])
             group_definitions = request_body.get("groupDefinitions")
             output_path = request_body.get("outputPath")
-            content = export_config_text(self.project_root, fixtures, group_definitions)
+            config_path = request_body.get("configPath")
+            if config_path is not None and not isinstance(config_path, str):
+                raise ValueError("configPath must be a string")
+            source_path = resolve_config_source_path(self.project_root, config_path)
+            content = export_config_text(self.project_root, fixtures, group_definitions, source_path)
             saved_path = write_export(self.project_root, content, output_path if isinstance(output_path, str) else None)
             self._send_json(
                 {
                     "content": content,
                     "savedPath": saved_path,
-                    "fileName": "controllables.py",
+                    "fileName": source_path.name,
+                    "configPath": str(source_path),
+                    "configLabel": config_path_label(self.project_root, source_path),
                 }
             )
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
-    def _start_load_job(self) -> str:
+    def _start_load_job(self, config_path: str | None = None) -> str:
         job_id = uuid.uuid4().hex
         job_state = {
             "jobId": job_id,
@@ -126,6 +142,7 @@ class EditorRequestHandler(SimpleHTTPRequestHandler):
             "progress": 0,
             "message": "Starting fixture load",
             "payload": None,
+            "configPath": config_path,
         }
         with self.load_jobs_lock:
             self.load_jobs[job_id] = job_state
@@ -144,7 +161,10 @@ class EditorRequestHandler(SimpleHTTPRequestHandler):
                 job["message"] = message
 
         try:
-            payload = get_fixture_payload(self.project_root, progress_callback=progress_callback)
+            with self.load_jobs_lock:
+                job = self.load_jobs.get(job_id)
+                config_path = job.get("configPath") if job is not None else None
+            payload = get_fixture_payload(self.project_root, config_path, progress_callback=progress_callback)
             with self.load_jobs_lock:
                 job = self.load_jobs.get(job_id)
                 if job is None:

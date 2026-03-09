@@ -49,6 +49,7 @@ const dom = {
   localSpaceButton: document.querySelector("#localSpaceButton"),
   worldSpaceButton: document.querySelector("#worldSpaceButton"),
   frameAllButton: document.querySelector("#frameAllButton"),
+  configPathSelect: document.querySelector("#configPathSelect"),
   statusLine: document.querySelector("#statusLine"),
   loadProgress: document.querySelector("#loadProgress"),
   loadProgressBar: document.querySelector("#loadProgressBar"),
@@ -84,9 +85,14 @@ const state = {
   fixtureLibrary: [],
   groupDefinitions: [],
   pixelFunctionLibrary: [],
+  availableConfigFiles: [],
   fixtureVisuals: new Map(),
   originalTransforms: new Map(),
   originalSnapshot: null,
+  currentConfigPath: null,
+  currentConfigLabel: "",
+  isDirty: false,
+  isLoadingFixtures: false,
   selectedId: null,
   searchTerm: "",
   transformMode: "translate",
@@ -239,7 +245,7 @@ function bindUi() {
   dom.resetAllButton.addEventListener("click", resetAllFixtures);
   dom.reloadButton.addEventListener("click", async () => {
     try {
-      await loadFixtures();
+      await loadFixtures(state.currentConfigPath);
       setStatus("Reloaded from disk.");
     } catch (error) {
       setStatus(error.message, true);
@@ -280,6 +286,7 @@ function bindUi() {
   dom.nudgeNegativeButton.addEventListener("click", () => nudgeSelectedFixture(-1));
   dom.nudgePositiveButton.addEventListener("click", () => nudgeSelectedFixture(1));
   dom.frameAllButton.addEventListener("click", () => frameObjects([...state.fixtureVisuals.values()].map((visual) => visual.root)));
+  dom.configPathSelect.addEventListener("change", onConfigPathChange);
   dom.openAddFixtureButton.addEventListener("click", openAddFixtureModal);
   dom.cloneFixtureButton.addEventListener("click", cloneSelectedFixture);
   dom.removeFixtureButton.addEventListener("click", removeSelectedFixture);
@@ -316,24 +323,78 @@ function bindUi() {
   dom.modalClearPixelButton.addEventListener("click", clearModalPixelinfo);
 }
 
-async function loadFixtures() {
-  setLoadingProgress(2, "Starting fixture load");
-
-  const startResponse = await fetch("./api/load-jobs", {
-    method: "POST",
-    cache: "no-store"
-  });
-  const startPayload = await startResponse.json();
-  if (!startResponse.ok) {
-    throw new Error(startPayload.error || "Failed to start fixture load");
+async function onConfigPathChange() {
+  const nextConfigPath = dom.configPathSelect.value || null;
+  if (state.isLoadingFixtures || nextConfigPath === state.currentConfigPath) {
+    return;
   }
 
-  const payload = await waitForLoadJob(startPayload.jobId);
-  state.originalSnapshot = cloneEditorPayload(payload);
-  applyEditorPayload(payload);
-  dom.outputPathInput.value = payload.defaultOutputPath;
-  setLoadingProgress(100, `Loaded ${state.fixtures.length} active fixtures from config/controllables.py`);
-  setStatus(`Loaded ${state.fixtures.length} active fixtures from config/controllables.py`);
+  const previousConfigPath = state.currentConfigPath || "";
+  if (state.isDirty && !window.confirm("Discard current unsaved edits and load a different show file?")) {
+    dom.configPathSelect.value = previousConfigPath;
+    return;
+  }
+
+  try {
+    await loadFixtures(nextConfigPath);
+  } catch (error) {
+    dom.configPathSelect.value = previousConfigPath;
+    setStatus(error.message, true);
+  }
+}
+
+function populateConfigPathOptions() {
+  dom.configPathSelect.replaceChildren();
+
+  for (const entry of state.availableConfigFiles) {
+    const option = document.createElement("option");
+    option.value = entry.path;
+    option.textContent = entry.relativePath || entry.label || entry.path;
+    dom.configPathSelect.appendChild(option);
+  }
+
+  if (state.currentConfigPath && !state.availableConfigFiles.some((entry) => entry.path === state.currentConfigPath)) {
+    const option = document.createElement("option");
+    option.value = state.currentConfigPath;
+    option.textContent = state.currentConfigLabel || state.currentConfigPath;
+    dom.configPathSelect.appendChild(option);
+  }
+
+  dom.configPathSelect.value = state.currentConfigPath || state.availableConfigFiles[0]?.path || "";
+  dom.configPathSelect.disabled = state.isLoadingFixtures || dom.configPathSelect.options.length === 0;
+  dom.reloadButton.disabled = state.isLoadingFixtures;
+}
+
+async function loadFixtures(configPath = state.currentConfigPath) {
+  state.isLoadingFixtures = true;
+  populateConfigPathOptions();
+  setLoadingProgress(2, "Starting fixture load");
+
+  try {
+    const startResponse = await fetch("./api/load-jobs", {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(configPath ? { configPath } : {})
+    });
+    const startPayload = await startResponse.json();
+    if (!startResponse.ok) {
+      throw new Error(startPayload.error || "Failed to start fixture load");
+    }
+
+    const payload = await waitForLoadJob(startPayload.jobId);
+    state.originalSnapshot = cloneEditorPayload(payload);
+    applyEditorPayload(payload);
+    dom.outputPathInput.value = payload.defaultOutputPath;
+    const configLabel = payload.configLabel || "config/controllables.py";
+    setLoadingProgress(100, `Loaded ${state.fixtures.length} active fixtures from ${configLabel}`);
+    setStatus(`Loaded ${state.fixtures.length} active fixtures from ${configLabel}`);
+  } finally {
+    state.isLoadingFixtures = false;
+    populateConfigPathOptions();
+  }
 }
 
 async function waitForLoadJob(jobId) {
@@ -365,11 +426,15 @@ function applyEditorPayload(payload) {
   state.fixtureLibrary = (payload.fixtureLibrary || []).map(cloneFixtureLibraryEntry);
   state.groupDefinitions = (payload.groupDefinitions || []).map(cloneGroupDefinition);
   state.pixelFunctionLibrary = [...(payload.pixelFunctionLibrary || [])];
+  state.availableConfigFiles = (payload.availableConfigFiles || []).map(cloneConfigFileEntry);
+  state.currentConfigPath = payload.configPath || null;
+  state.currentConfigLabel = payload.configLabel || "";
   state.originalTransforms.clear();
   state.selectedId = null;
   state.fixtureVisuals.clear();
   state.rayTargets = [];
   state.currentLibraryTemplateKey = state.fixtureLibrary[0]?.key || null;
+  populateConfigPathOptions();
 
   transformControls.detach();
   fixtureGroup.clear();
@@ -1042,7 +1107,10 @@ async function requestModalPreview() {
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ expression })
+      body: JSON.stringify({
+        expression,
+        configPath: state.currentConfigPath,
+      })
     });
     const payload = await response.json();
     if (requestId !== state.fixtureModal.previewRequestId) {
@@ -1654,6 +1722,7 @@ function updateDirtyState() {
 
   dom.dirtyBadge.textContent = dirty ? "Dirty" : "Clean";
   dom.dirtyBadge.style.color = dirty ? "var(--accent-strong)" : "var(--muted)";
+  state.isDirty = dirty;
 }
 
 function getCurrentFixtureTransform(fixtureId) {
@@ -1682,6 +1751,7 @@ function getSelectedVisual() {
 
 async function exportFixtures(outputPath = null) {
   const payload = {
+    configPath: state.currentConfigPath,
     outputPath,
     groupDefinitions: state.groupDefinitions.map((groupDefinition) => ({
       name: groupDefinition.name,
@@ -1975,6 +2045,10 @@ function cloneFixtureLibraryEntry(template) {
   return clone;
 }
 
+function cloneConfigFileEntry(entry) {
+  return { ...entry };
+}
+
 function cloneGroupDefinition(groupDefinition) {
   return {
     name: groupDefinition.name,
@@ -1986,6 +2060,8 @@ function cloneGroupDefinition(groupDefinition) {
 function cloneEditorPayload(payload) {
   return {
     ...payload,
+    configPath: payload.configPath || null,
+    configLabel: payload.configLabel || "",
     roomBounds: payload.roomBounds
       ? {
           min: payload.roomBounds.min.slice(),
@@ -1994,6 +2070,7 @@ function cloneEditorPayload(payload) {
       : null,
     fixtures: (payload.fixtures || []).map(cloneFixture),
     fixtureLibrary: (payload.fixtureLibrary || []).map(cloneFixtureLibraryEntry),
+    availableConfigFiles: (payload.availableConfigFiles || []).map(cloneConfigFileEntry),
     groupDefinitions: (payload.groupDefinitions || []).map(cloneGroupDefinition),
     pixelFunctionLibrary: [...(payload.pixelFunctionLibrary || [])]
   };

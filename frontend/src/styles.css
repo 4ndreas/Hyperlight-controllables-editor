@@ -447,6 +447,25 @@ select.text-input {
   gap: 0.5rem;
 }
 
+.toolbar-group-show {
+  align-items: center;
+  min-width: 0;
+}
+
+.toolbar-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.toolbar-select {
+  min-width: 260px;
+  max-width: 360px;
+  padding-top: 0.58rem;
+  padding-bottom: 0.58rem;
+}
+
 .toolbar-group-grow {
   flex: 1;
 }
@@ -612,6 +631,20 @@ select.text-input {
   .modal-preview-viewport {
     min-height: 280px;
   }
+
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  .toolbar-group-show {
+    width: 100%;
+    order: 3;
+  }
+
+  .toolbar-select {
+    max-width: none;
+    flex: 1;
+  }
 }
 
 @media (max-width: 720px) {
@@ -619,7 +652,12 @@ select.text-input {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .toolbar {
+  .toolbar-group {
+    width: 100%;
     flex-wrap: wrap;
+  }
+
+  .toolbar-group-grow {
+    flex: auto;
   }
 }
