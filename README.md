@@ -48,3 +48,17 @@ cd ..
 - The editor reads `config/controllables.py`.
 - Export keeps the original file text and comments intact where possible and only replaces active `position` and `orientation` expressions inside `groups`.
 - Exported orientations are written as numeric `Quaternion([x, y, z, w])` values.
+
+
+## To Do
+
+- auto artnet-in numbering 
+- add items as grid
+- auto DMX numbering
+
+- add enviroment to the scene
+- add custom 3d models to the fixture
+- fix or add drag and dropp objects
+- show wireing of the leds ?
+- live mode to light up a fixture (setup help)
+- live mode for simulation ?
